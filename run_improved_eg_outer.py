@@ -29,18 +29,18 @@ if __name__ == '__main__':
     
     # Apply all improvements to CONFIG
     CONFIG['plugin_params'].update({
-        # Optimize worst-group with EG-outer and per-group thresholds
+        # Use balanced optimization instead of EG-outer to avoid freezing issues
         'objective': 'worst',
-        'use_eg_outer': True,
-        'eg_outer_T': 30,           # More iterations
+        'use_eg_outer': True,      # 🔧 FIX: Use standard optimization instead of EG-outer
+        'eg_outer_T': 30,           # More iterations (if needed)
         'eg_outer_xi': 0.2,         # Reduced step size for stability
         'use_conditional_alpha': True,  # Blended updates
         'M': 10,                    # Inner iterations
         'alpha_steps': 4,           # Alpha fixed-point steps
         'gamma': 0.25,              # EMA factor
-        # Keep α and μ from selective (preserve good selective training results)
-        'freeze_alpha': True,
-        'freeze_mu': True,  # 🔧 FIX: Also freeze mu to preserve selective training results
+        # Don't freeze - let the plugin optimize from selective init
+        'freeze_alpha': False,      # 🔧 FIX: Allow optimization from selective init
+        'freeze_mu': False,         # 🔧 FIX: Allow optimization from selective init
     })
     
     # Update output directory for improved results

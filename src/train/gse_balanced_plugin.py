@@ -40,20 +40,20 @@ CONFIG = {
         'alpha_min': 0.85,   # Focused bounds around optimal region
         'alpha_max': 1.15,   # Tighter optimal range
         'lambda_grid': [round(x, 2) for x in np.linspace(-2.0, 2.0, 41)],  # Expanded grid for comprehensive search
-        'cov_target': 0.58,  # Lower target for better precision
-        'objective': 'worst',  # Switch to 'worst' for tail-focused optimization
+        'cov_target': 0.70,  # 🔧 FIX: Higher target coverage (was 0.58)
+        'objective': 'balanced',  # 🔧 FIX: Use balanced instead of worst for better overall performance
         'hybrid_beta': 0.2,  # weight for balanced term in hybrid objective
         'alpha_steps': 5,  # More steps for precision
         'use_conditional_alpha': True,  # use conditional acceptance for alpha updates
         'tie_break_balanced': True,  # use balanced AURC for tie-breaking when optimizing worst
-        'use_eg_outer': False,  # use EG-outer for worst-group optimization
+        'use_eg_outer': False,  # 🔧 FIX: Disable EG-outer to use standard optimization
         'eg_outer_T': 20,  # EG outer iterations
         'eg_outer_xi': 1.0,  # EG step size
         'use_ema_mu': True,  # Apply EMA smoothing to μ updates
-        # --- New selective init options ---
+        # --- Selective init options (adopt from original) ---
         'use_selective_init': True,       # load gating_selective.ckpt if available
-        'freeze_alpha': False,            # if True, keep α from selective init
-        'freeze_mu': False,               # if True, skip μ grid optimization (keep μ)
+        'freeze_alpha': False,            # 🔧 FIX: Allow optimization from selective init
+        'freeze_mu': False,               # 🔧 FIX: Allow optimization from selective init
         'expand_grid_if_frozen_mu': False # ignore lambda grid when mu frozen
     },
     'output': {
@@ -617,14 +617,8 @@ def main():
                 # Initialize α, μ, threshold from selective if not frozen logic will apply later
                 init_alpha = sel_ckpt.get('alpha', None)
                 init_mu = sel_ckpt.get('mu', None) 
-                init_t = sel_ckpt.get('t', None)
+                init_t = sel_ckpt.get('t_param', sel_ckpt.get('t', None))  # Handle both t_param and t
                 selective_loaded = True
-                
-                # Debug: Print what's in the checkpoint
-                print(f"🔍 Debug - Selective checkpoint keys: {list(sel_ckpt.keys())}")
-                print(f"🔍 Debug - init_alpha: {init_alpha}")
-                print(f"🔍 Debug - init_mu: {init_mu}")
-                print(f"🔍 Debug - init_t: {init_t}")
             else:
                 print("❌ Selective checkpoint incompatible with enriched features. Using random init.")
         except Exception as e:
@@ -697,109 +691,55 @@ def main():
     cov_target = CONFIG['plugin_params']['cov_target']
     objective = CONFIG['plugin_params']['objective']
     
-    # Check if we should use EG-outer for worst-group optimization
-    if objective == 'worst' and CONFIG['plugin_params']['use_eg_outer']:
-        print(f"\n=== Running GSE Worst-Group with EG-Outer (T={CONFIG['plugin_params']['eg_outer_T']}, xi={CONFIG['plugin_params']['eg_outer_xi']}) ===")
-        
-        # Handle selective initialization for EG-outer
-        alpha_init = None
-        mu_init = None
-        if selective_loaded and CONFIG['plugin_params'].get('freeze_alpha', False) and init_alpha is not None:
-            alpha_init = init_alpha.to(DEVICE)
-            print(f"🔒 freeze_alpha=True -> using α from selective init: {alpha_init.tolist()}")
-        
-        if selective_loaded and init_mu is not None:
-            mu_init = init_mu.to(DEVICE)
-            print(f"🔒 Using μ from selective init: {mu_init.tolist()}")
-        
-        from src.train.gse_worst_eg import worst_group_eg_outer
-        
-        alpha_star, mu_star, t_group_star, beta_star, eg_hist = worst_group_eg_outer(
-            eta_S1.to(DEVICE), y_S1.to(DEVICE),
-            eta_S2.to(DEVICE), y_S2.to(DEVICE),
-            class_to_group.to(DEVICE), K=num_groups,
-            T=CONFIG['plugin_params']['eg_outer_T'], 
-            xi=CONFIG['plugin_params']['eg_outer_xi'],
-            lambda_grid=np.linspace(-1.2, 1.2, 41).tolist(),
-            M=8, alpha_steps=4, 
-            target_cov_by_group=[0.70, 0.60] if num_groups==2 else [0.65]*num_groups,  # Better coverage targets
-            gamma=CONFIG['plugin_params']['gamma'],
-            use_conditional_alpha=CONFIG['plugin_params']['use_conditional_alpha'],
-            alpha_init=alpha_init,  # 🔧 Fix: Pass selective alpha init
-            mu_init=mu_init,  # 🔧 Fix: Pass selective mu init
-            freeze_alpha=CONFIG['plugin_params'].get('freeze_alpha', False),  # 🔧 Fix: Pass freeze flag
-            freeze_mu=CONFIG['plugin_params'].get('freeze_mu', False)  # 🔧 Fix: Pass freeze_mu flag
-        )
-        
-        
-        # ✅ Use the per-group thresholds directly from EG-outer (consistent!)
-        t_group = t_group_star.cpu().numpy().tolist() if hasattr(t_group_star, 'cpu') else t_group_star
-        print(f"✅ Using per-group thresholds from EG-outer: {t_group}")
-        
-        # No need to re-fit - maintains consistency between optimization and evaluation!
-        
-        # Compute final best score using per-group thresholds
-        from src.train.gse_balanced_plugin import worst_error_on_S_with_per_group_thresholds  
-        best_score, _ = worst_error_on_S_with_per_group_thresholds(eta_S2.to(DEVICE), y_S2.to(DEVICE), 
-                                       alpha_star.to(DEVICE), mu_star.to(DEVICE), 
-                                       t_group_star.to(DEVICE), class_to_group.to(DEVICE), num_groups)
-        
-        
-    else:
-        print(f"\n=== Running GSE-Balanced Plugin (target_coverage={cov_target:.2f}, objective={objective}) ===")
-        # If selective init loaded and freeze flags set, adapt grid / parameters
-        lambda_grid_cfg = CONFIG['plugin_params']['lambda_grid']
-        if selective_loaded and CONFIG['plugin_params'].get('freeze_mu', False):
-            print("🔒 freeze_mu=True -> skipping μ grid search, using μ from selective checkpoint")
-            # Set grid to single dummy to keep code path consistent
-            lambda_grid_cfg = [0.0]
-            if isinstance(init_mu, torch.Tensor):
-                mu_init_tensor = init_mu.to(DEVICE)
-            else:
-                mu_init_tensor = None
-        alpha_init = init_alpha if (selective_loaded and init_alpha is not None and CONFIG['plugin_params'].get('freeze_alpha', False)) else None
-        if alpha_init is not None:
-            print(f"🔒 freeze_alpha=True -> using α from selective init: {alpha_init.tolist()}")
-        if selective_loaded and init_t is not None:
-            print(f"ℹ️ Using selective raw-margin threshold init t={init_t:.4f} (will refit per plugin iteration)")
+    # Run standard GSE-Balanced plugin optimization
+    print(f"\n=== Running GSE-Balanced Plugin (target_coverage={cov_target:.2f}, objective={objective}) ===")
+    # If selective init loaded and freeze flags set, adapt grid / parameters
+    lambda_grid_cfg = CONFIG['plugin_params']['lambda_grid']
+    if selective_loaded and CONFIG['plugin_params'].get('freeze_mu', False):
+        print("🔒 freeze_mu=True -> skipping μ grid search, using μ from selective checkpoint")
+        # Set grid to single dummy to keep code path consistent
+        lambda_grid_cfg = [0.0]
+        if isinstance(init_mu, torch.Tensor):
+            mu_init_tensor = init_mu.to(DEVICE)
+        else:
+            mu_init_tensor = None
+    alpha_init = init_alpha if (selective_loaded and init_alpha is not None and CONFIG['plugin_params'].get('freeze_alpha', False)) else None
+    if alpha_init is not None:
+        print(f"🔒 freeze_alpha=True -> using α from selective init: {alpha_init.tolist()}")
+    if selective_loaded and init_t is not None:
+        print(f"ℹ️ Using selective raw-margin threshold init t={init_t:.4f} (will refit per plugin iteration)")
 
-        alpha_star, mu_star, best_score, t_star = gse_balanced_plugin(
-            eta_S1=eta_S1.to(DEVICE),
-            y_S1=y_S1.to(DEVICE),
-            eta_S2=eta_S2.to(DEVICE), 
-            y_S2=y_S2.to(DEVICE),
-            class_to_group=class_to_group.to(DEVICE),
-            K=num_groups,
-            c=None,
-            M=CONFIG['plugin_params']['M'],
-            lambda_grid=lambda_grid_cfg,
-            alpha_init=alpha_init.to(DEVICE) if isinstance(alpha_init, torch.Tensor) else None,
-            gamma=CONFIG['plugin_params']['gamma'],
-            cov_target=CONFIG['plugin_params']['cov_target'],
-            objective=CONFIG['plugin_params']['objective'],
-            hybrid_beta=CONFIG['plugin_params']['hybrid_beta'],
-            alpha_steps=CONFIG['plugin_params']['alpha_steps'],
-            use_conditional_alpha=CONFIG['plugin_params']['use_conditional_alpha'],
-            tie_break_balanced=CONFIG['plugin_params']['tie_break_balanced'],
-            use_ema_mu=CONFIG['plugin_params'].get('use_ema_mu', True),
-        )
-        # If μ was frozen, overwrite with init μ
-        if selective_loaded and CONFIG['plugin_params'].get('freeze_mu', False) and 'mu_init_tensor' in locals() and mu_init_tensor is not None:
-            mu_star = mu_init_tensor.cpu()
+    alpha_star, mu_star, best_score, t_star = gse_balanced_plugin(
+        eta_S1=eta_S1.to(DEVICE),
+        y_S1=y_S1.to(DEVICE),
+        eta_S2=eta_S2.to(DEVICE), 
+        y_S2=y_S2.to(DEVICE),
+        class_to_group=class_to_group.to(DEVICE),
+        K=num_groups,
+        c=None,
+        M=CONFIG['plugin_params']['M'],
+        lambda_grid=lambda_grid_cfg,
+        alpha_init=alpha_init.to(DEVICE) if isinstance(alpha_init, torch.Tensor) else None,
+        gamma=CONFIG['plugin_params']['gamma'],
+        cov_target=CONFIG['plugin_params']['cov_target'],
+        objective=CONFIG['plugin_params']['objective'],
+        hybrid_beta=CONFIG['plugin_params']['hybrid_beta'],
+        alpha_steps=CONFIG['plugin_params']['alpha_steps'],
+        use_conditional_alpha=CONFIG['plugin_params']['use_conditional_alpha'],
+        tie_break_balanced=CONFIG['plugin_params']['tie_break_balanced'],
+        use_ema_mu=CONFIG['plugin_params'].get('use_ema_mu', True),
+    )
+    
+    # If μ was frozen, overwrite with init μ
+    if selective_loaded and CONFIG['plugin_params'].get('freeze_mu', False) and 'mu_init_tensor' in locals() and mu_init_tensor is not None:
+        mu_star = mu_init_tensor.cpu()
     
     # print(f"Best raw-margin threshold t* (fitted on S1): {t_star:.3f}")  # Skip since using per-group
 
-    # Use global threshold or per-group thresholds based on method
-    if objective == 'worst' and CONFIG['plugin_params']['use_eg_outer']:
-        # Use per-group thresholds from EG-outer directly (ensuring consistency)
-        t_group = t_group_star.cpu().numpy().tolist() if hasattr(t_group_star, 'cpu') else t_group_star
-        print(f"✅ Using per-group thresholds from EG-outer: {t_group}")
-        source_info = "EG-outer per-group thresholds"
-    else:
-        # Use global threshold from plugin
-        t_group = [t_star] * num_groups  # Convert single threshold to per-group format
-        print(f"✅ Using global threshold t*={t_star:.3f} for all groups")
-        source_info = f'gse_{objective}_plugin'
+    # Use global threshold from standard plugin optimization
+    t_group = [t_star] * num_groups  # Convert single threshold to per-group format
+    print(f"✅ Using global threshold t*={t_star:.3f} for all groups")
+    source_info = f'gse_{objective}_plugin'
     
     # 7) Save results
     print("\n🎉 GSE-Balanced Plugin Complete!")
