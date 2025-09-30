@@ -29,14 +29,18 @@ if __name__ == '__main__':
     
     # Apply all improvements to CONFIG
     CONFIG['plugin_params'].update({
-        'objective': 'balanced',
-        'use_eg_outer': False,
+        # Optimize worst-group with EG-outer and per-group thresholds
+        'objective': 'worst',
+        'use_eg_outer': True,
         'eg_outer_T': 30,           # More iterations
         'eg_outer_xi': 0.2,         # Reduced step size for stability
-        'use_conditional_alpha': True,  # Enable blended updates
+        'use_conditional_alpha': True,  # Blended updates
         'M': 10,                    # Inner iterations
         'alpha_steps': 4,           # Alpha fixed-point steps
-        'gamma': 0.25,             # EMA factor
+        'gamma': 0.25,              # EMA factor
+        # Keep α from selective (tail-boost retained), re-optimize μ only
+        'freeze_alpha': True,
+        'freeze_mu': False,
     })
     
     # Update output directory for improved results

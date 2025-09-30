@@ -295,7 +295,7 @@ CONFIG = {
     },
     'output': {
         'checkpoints_dir': './checkpoints/experts_tlc',
-        'logits_dir': './outputs/logits_tlc',
+        'logits_dir': './outputs/tlc_logits',
     },
     'seed': 42
 }
