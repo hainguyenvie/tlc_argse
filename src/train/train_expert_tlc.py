@@ -204,11 +204,18 @@ class TLCExpertLoss(nn.Module):
             output_dist = F.log_softmax(logits / diversity_temperature, dim=1)
             with torch.no_grad():
                 mean_output_dist = F.softmax(global_mean_logits / diversity_temperature, dim=1)
-            diversity_loss = F.kl_div(output_dist, mean_output_dist, reduction='none').sum(dim=1)  # [B]
-            diversity_loss = -self.diversity_weight * temperature_mean * temperature_mean * diversity_loss
+            diversity_kl = F.kl_div(output_dist, mean_output_dist, reduction='none').sum(dim=1)  # [B]
+            
+            # FIXED: Remove negative sign - we want to PENALIZE being too different, not reward it
+            # The diversity loss should encourage some diversity but prevent complete collapse
+            diversity_loss = self.diversity_weight * temperature_mean * temperature_mean * diversity_kl
             
             nll_loss = nll_loss + diversity_loss
             
+        # Auxiliary CE anchor (prevents collapse in tail expert): small weight
+        ce_anchor = 0.02 * F.cross_entropy(logits, targets)
+        nll_loss = nll_loss + ce_anchor
+
         # Final safety check: ensure the final loss is finite
         final_loss = nll_loss.mean()
         if not torch.isfinite(final_loss):
@@ -256,18 +263,18 @@ TLC_EXPERT_CONFIGS = {
     'tlc_tail_focused': {
         'name': 'tlc_tail_expert',
         'loss_params': {
-            'max_m': 0.7,  # Large margin for tail focus
-            'reweight_epoch': 120,  # Earlier reweighting
-            'reweight_factor': 0.08,  # Stronger reweighting
-            'annealing': 400,
-            'diversity_weight': 0.015,  # Higher diversity
+            'max_m': 0.55,  # Softer margin for stability
+            'reweight_epoch': 140,  # Enable reweighting a bit later
+            'reweight_factor': 0.05,  # Standard reweighting strength
+            'annealing': 450,
+            'diversity_weight': 0.003,  # Much lower to avoid overpowering
         },
         'epochs': 200,
-        'lr': 0.1,
+        'lr': 0.05,  # Slightly lower LR for tail expert stability
         'weight_decay': 5e-4,
         'dropout_rate': 0.15,  # More dropout for regularization
-        'milestones': [140, 170],
-        'gamma': 0.01,
+        'milestones': [100, 140],  # Earlier decay to prevent saturation
+        'gamma': 0.1,  # Softer decay than 0.01 to avoid huge jumps
         'warmup_epochs': 5,
     }
 }
@@ -475,6 +482,8 @@ def train_single_tlc_expert(expert_key):
         weight_decay=expert_config['weight_decay'],
         nesterov=CONFIG['train_params']['nesterov']
     )
+    # Add gradient clipping threshold for stability in tail expert
+    grad_clip_norm = 1.0
     
     # Learning rate scheduler with warmup
     def lr_lambda(epoch):
@@ -525,6 +534,8 @@ def train_single_tlc_expert(expert_key):
             global_mean_on_device = global_mean_logits.to(DEVICE) if global_mean_logits is not None else None
             loss = criterion(outputs, targets, epoch, global_mean_on_device)
             loss.backward()
+            # Gradient clipping (stabilizes training for tail expert)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
             
             running_loss += loss.item()

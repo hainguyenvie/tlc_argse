@@ -39,6 +39,10 @@ if __name__ == '__main__':
         'gamma': 0.25,             # EMA factor
     })
     
+    # Use TLC experts and TLC logits directory
+    CONFIG['experts']['names'] = ['tlc_ce_expert', 'tlc_balanced_expert', 'tlc_tail_expert']
+    CONFIG['experts']['logits_dir'] = './outputs/tlc_logits'
+    
     # Update output directory for improved results
     CONFIG['output']['checkpoints_dir'] = './checkpoints/argse_worst_eg_improved/'
     
@@ -48,6 +52,8 @@ if __name__ == '__main__':
     print(f"  Inner iterations: {CONFIG['plugin_params']['M']}")
     print(f"  Alpha method: {'blended' if CONFIG['plugin_params']['use_conditional_alpha'] else 'joint'}")
     print(f"  Output: {CONFIG['output']['checkpoints_dir']}")
+    print(f"  Experts: {CONFIG['experts']['names']}")
+    print(f"  Logits dir: {CONFIG['experts']['logits_dir']}")
     
     print(f"\nStarting training...")
     main()
