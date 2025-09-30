@@ -428,8 +428,14 @@ def export_logits_for_all_splits(model, expert_name):
 
 # --- CORE TRAINING FUNCTIONS ---
 
-def train_single_tlc_expert(expert_key):
-    """Train a single TLC-style expert."""
+def train_single_tlc_expert(expert_key, select_by: str = None):
+    """Train a single TLC-style expert.
+
+    Args:
+        expert_key: key in TLC_EXPERT_CONFIGS
+        select_by: 'overall' or 'tail' - model selection criterion. If None, defaults
+                   to 'tail' for tlc_tail_expert, else 'overall'.
+    """
     if expert_key not in TLC_EXPERT_CONFIGS:
         raise ValueError(f"Expert '{expert_key}' not found in TLC_EXPERT_CONFIGS")
     
@@ -502,7 +508,14 @@ def train_single_tlc_expert(expert_key):
     scheduler = optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     # Training setup
-    best_acc = 0.0
+    # Selection criterion
+    if select_by is None:
+        save_by = 'tail' if 'tail' in expert_name else 'overall'
+    else:
+        save_by = select_by.lower()
+        assert save_by in ['overall','tail'], "select_by must be 'overall' or 'tail'"
+
+    best_metric = 0.0
     checkpoint_dir = Path(CONFIG['output']['checkpoints_dir']) / CONFIG['dataset']['name']
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     best_model_path = checkpoint_dir / f"best_{expert_name}.pth"
@@ -556,10 +569,12 @@ def train_single_tlc_expert(expert_key):
             f"Val Acc={val_acc:.2f}%, Head={group_accs['head']:.1f}%, "
             f"Tail={group_accs['tail']:.1f}%, LR={scheduler.get_last_lr()[0]:.5f}")
         
-        # Save best model
-        if val_acc > best_acc:
-            best_acc = val_acc
-            print(f"💾 New best! Saving to {best_model_path}")
+        # Save best model according to criterion
+        current_metric = val_acc if save_by == 'overall' else group_accs.get('tail', 0.0)
+        if current_metric > best_metric:
+            best_metric = current_metric
+            crit_name = 'Val Acc' if save_by == 'overall' else 'Tail Acc'
+            print(f"💾 New best by {crit_name}! Saving to {best_model_path}")
             torch.save(model.state_dict(), best_model_path)
     
     # Post-training: Calibration
@@ -586,18 +601,32 @@ def train_single_tlc_expert(expert_key):
     print(f"✅ COMPLETED: {expert_name}")
     return final_model_path
 
+def parse_args():
+    import argparse
+    p = argparse.ArgumentParser(description='Train TLC experts')
+    p.add_argument('--expert', choices=list(TLC_EXPERT_CONFIGS.keys()), default='all',
+                   help='Which expert to train (default: all)')
+    p.add_argument('--select_by', choices=['overall','tail'], default=None,
+                   help='Model selection criterion (default: tail for tail expert, overall otherwise)')
+    return p.parse_args()
+
 def main():
-    """Main training script - trains all 3 TLC-style experts."""
+    """Main training script - trains all 3 TLC-style experts or a single one."""
+    args = parse_args()
     print("🚀 AR-GSE TLC Expert Training Pipeline")
     print(f"Device: {DEVICE}")
     print(f"Dataset: {CONFIG['dataset']['name']}")
-    print(f"TLC experts to train: {list(TLC_EXPERT_CONFIGS.keys())}")
+    if args.expert == 'all':
+        to_train = list(TLC_EXPERT_CONFIGS.keys())
+    else:
+        to_train = [args.expert]
+    print(f"TLC experts to train: {to_train}")
     
     results = {}
     
-    for expert_key in TLC_EXPERT_CONFIGS.keys():
+    for expert_key in to_train:
         try:
-            model_path = train_single_tlc_expert(expert_key)
+            model_path = train_single_tlc_expert(expert_key, select_by=args.select_by)
             results[expert_key] = {'status': 'success', 'path': model_path}
         except Exception as e:
             print(f"❌ Failed to train {expert_key}: {e}")
