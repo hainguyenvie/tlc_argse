@@ -29,8 +29,9 @@ CONFIG = {
         'threshold': 20,
     },
     'experts': {
-        'names': ['ce_baseline', 'logitadjust_baseline', 'balsoftmax_baseline'],
-        'logits_dir': './outputs/logits/',
+        # Updated to use TLC experts and their logits directory
+        'names': ['tlc_ce_expert', 'tlc_balanced_expert', 'tlc_tail_expert'],
+        'logits_dir': './outputs/tlc_logits/',
     },
     'gating_params': {
         'epochs': 25,         # More epochs for better convergence
