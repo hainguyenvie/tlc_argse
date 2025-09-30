@@ -488,8 +488,8 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
         weight_decay=1e-4,               # per spec
         nesterov=CONFIG['train_params']['nesterov']
     )
-    # Add gradient clipping threshold for stability in tail expert
-    grad_clip_norm = 1.0
+    # Gradient clipping only for tail expert to avoid hampering head learning
+    grad_clip_norm = 1.0 if 'tail' in expert_name else 0.0
     
     # Learning rate scheduler with warmup
     def lr_lambda(epoch):
@@ -547,8 +547,9 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
             global_mean_on_device = global_mean_logits.to(DEVICE) if global_mean_logits is not None else None
             loss = criterion(outputs, targets, epoch, global_mean_on_device)
             loss.backward()
-            # Gradient clipping (stabilizes training for tail expert)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+            # Gradient clipping (only if enabled for this expert)
+            if grad_clip_norm and grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
             optimizer.step()
             
             running_loss += loss.item()
