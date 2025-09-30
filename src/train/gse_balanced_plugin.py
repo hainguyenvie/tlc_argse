@@ -695,6 +695,12 @@ def main():
     if objective == 'worst' and CONFIG['plugin_params']['use_eg_outer']:
         print(f"\n=== Running GSE Worst-Group with EG-Outer (T={CONFIG['plugin_params']['eg_outer_T']}, xi={CONFIG['plugin_params']['eg_outer_xi']}) ===")
         
+        # Handle selective initialization for EG-outer
+        alpha_init = None
+        if selective_loaded and CONFIG['plugin_params'].get('freeze_alpha', False) and init_alpha is not None:
+            alpha_init = init_alpha.to(DEVICE)
+            print(f"🔒 freeze_alpha=True -> using α from selective init: {alpha_init.tolist()}")
+        
         from src.train.gse_worst_eg import worst_group_eg_outer
         
         alpha_star, mu_star, t_group_star, beta_star, eg_hist = worst_group_eg_outer(
@@ -705,9 +711,11 @@ def main():
             xi=CONFIG['plugin_params']['eg_outer_xi'],
             lambda_grid=np.linspace(-1.2, 1.2, 41).tolist(),
             M=8, alpha_steps=4, 
-            target_cov_by_group=[0.55, 0.45] if num_groups==2 else [cov_target]*num_groups,
+            target_cov_by_group=[0.70, 0.60] if num_groups==2 else [0.65]*num_groups,  # Better coverage targets
             gamma=CONFIG['plugin_params']['gamma'],
-            use_conditional_alpha=CONFIG['plugin_params']['use_conditional_alpha']  # 🔧 Fix: Use config flag
+            use_conditional_alpha=CONFIG['plugin_params']['use_conditional_alpha'],
+            alpha_init=alpha_init,  # 🔧 Fix: Pass selective alpha init
+            freeze_alpha=CONFIG['plugin_params'].get('freeze_alpha', False)  # 🔧 Fix: Pass freeze flag
         )
         
         

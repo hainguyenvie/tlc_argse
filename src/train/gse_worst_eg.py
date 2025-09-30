@@ -24,7 +24,7 @@ def accepted_pred_with_beta(eta, alpha, mu, beta, thr, class_to_group):
 
 def inner_cost_sensitive_plugin_with_per_group_thresholds(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
                                 beta, lambda_grid, M=8, alpha_steps=4,
-                                target_cov_by_group=None, gamma=0.25, use_conditional_alpha=False):
+                                target_cov_by_group=None, gamma=0.25, use_conditional_alpha=False, alpha_init=None, freeze_alpha=False):
     """
     Inner plugin optimization using per-group thresholds t_k fitted on correct predictions.
     
@@ -45,14 +45,19 @@ def inner_cost_sensitive_plugin_with_per_group_thresholds(eta_S1, y_S1, eta_S2, 
         best_alpha, best_mu, best_t_group, best_score
     """
     device = eta_S1.device
-    alpha = torch.ones(K, device=device)
+    # Initialize alpha with selective init if provided
+    if alpha_init is not None:
+        alpha = alpha_init.clone().to(device)
+        print(f"🔒 Using alpha from selective init: {alpha.tolist()}")
+    else:
+        alpha = torch.ones(K, device=device)
     best = {"score": float("inf"), "lambda_idx": None}
     mus = []
     lambda_grid = list(lambda_grid)  # Ensure it's mutable
     
     # Default per-group coverage targets
     if target_cov_by_group is None:
-        target_cov_by_group = [0.55, 0.45] if K == 2 else [0.58] * K
+        target_cov_by_group = [0.70, 0.60] if K == 2 else [0.65] * K  # Better coverage targets
     
     for lam in lambda_grid:
         if K==2: 
@@ -90,17 +95,23 @@ def inner_cost_sensitive_plugin_with_per_group_thresholds(eta_S1, y_S1, eta_S2, 
                     # Fallback if no correct predictions
                     t_group_cur = torch.full((K,), -1.0, device=device)
                 
-                # Simple alpha update for per-group thresholds - placeholder
-                # We use the existing blended approach adapted for per-group thresholds
-                a_cur = 0.9 * a_cur + 0.1 * torch.ones(K, device=device)
-                
-                # Use blended alpha update with per-group thresholds
-                if use_conditional_alpha:
-                    # For now, skip complex conditional update
-                    pass
+                # Alpha update logic - skip if freeze_alpha is True
+                if not freeze_alpha:
+                    # Simple alpha update for per-group thresholds - placeholder
+                    # We use the existing blended approach adapted for per-group thresholds
+                    a_cur = 0.9 * a_cur + 0.1 * torch.ones(K, device=device)
+                    
+                    # Use blended alpha update with per-group thresholds
+                    if use_conditional_alpha:
+                        # For now, skip complex conditional update
+                        pass
+                    else:
+                        # Simple EMA update
+                        pass
                 else:
-                    # Simple EMA update
-                    pass
+                    # Alpha is frozen, keep the initial value
+                    if alpha_init is not None:
+                        a_cur = alpha_init.clone().to(device)
 
             # Evaluate on S2 using same per-group thresholds
             from src.train.gse_balanced_plugin import worst_error_on_S_with_per_group_thresholds
@@ -134,7 +145,7 @@ def inner_cost_sensitive_plugin_with_per_group_thresholds(eta_S1, y_S1, eta_S2, 
 
 def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
                          T=30, xi=0.2, lambda_grid=None, beta_floor=0.05, 
-                         beta_momentum=0.25, patience=6, **inner_kwargs):
+                         beta_momentum=0.25, patience=6, alpha_init=None, freeze_alpha=False, **inner_kwargs):
     """
     Improved Worst-group EG-outer algorithm with anti-collapse and smooth updates.
     
@@ -166,14 +177,23 @@ def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
 
     print(f"Starting improved EG-outer with T={T}, xi={xi}, beta_floor={beta_floor}, momentum={beta_momentum}")
     print(f"Lambda grid: [{lambda_grid[0]:.2f}, {lambda_grid[-1]:.2f}] ({len(lambda_grid)} points)")
+    if freeze_alpha and alpha_init is not None:
+        print(f"🔒 freeze_alpha=True -> using α from selective init: {alpha_init.tolist()}")
+    elif freeze_alpha:
+        print(f"⚠️ freeze_alpha=True but no alpha_init provided, using default initialization")
 
     for t in range(T):
         print(f"EG iteration {t+1}/{T}, β={[f'{b:.4f}' for b in beta.detach().cpu().tolist()]}")
         
         # Inner optimization with current beta - use per-group version
+        inner_kwargs_with_alpha = inner_kwargs.copy()
+        if freeze_alpha and alpha_init is not None:
+            inner_kwargs_with_alpha['alpha_init'] = alpha_init
+            inner_kwargs_with_alpha['freeze_alpha'] = True
+            
         a_t, m_t, thr_group_t, _ = inner_cost_sensitive_plugin_with_per_group_thresholds(
             eta_S1, y_S1, eta_S2, y_S2, class_to_group, K, beta,
-            lambda_grid=lambda_grid, **inner_kwargs
+            lambda_grid=lambda_grid, **inner_kwargs_with_alpha
         )
         
         # Compute per-group errors on S2 using per-group thresholds
