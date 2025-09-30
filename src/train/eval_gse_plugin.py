@@ -32,8 +32,9 @@ CONFIG = {
         'threshold': 20,
     },
     'experts': {
-        'names': ['ce_baseline', 'logitadjust_baseline', 'balsoftmax_baseline'],
-        'logits_dir': './outputs/logits',
+        # Updated to use TLC experts and directory matching your generated logits
+        'names': ['tlc_ce_expert', 'tlc_balanced_expert', 'tlc_tail_expert'],
+        'logits_dir': './outputs/tlc_logits',
     },
     'eval_params': {
         'coverage_points': [0.7, 0.8, 0.9],
