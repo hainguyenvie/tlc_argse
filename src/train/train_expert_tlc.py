@@ -17,6 +17,80 @@ from src.models.experts import Expert
 from src.metrics.calibration import TemperatureScaler
 from src.data.dataloader_utils import get_expert_training_dataloaders
 
+# --- ENHANCED LOGIT ADJUSTMENT LOSS ---
+class EnhancedLogitAdjustLoss(nn.Module):
+    """
+    Enhanced logit adjustment loss combining LogitAdjust with Focal Loss concepts
+    for better tail class performance.
+    """
+    def __init__(self, cls_num_list, tau=1.0, label_smoothing=0.1, focal_alpha=0.25, focal_gamma=2.0):
+        super(EnhancedLogitAdjustLoss, self).__init__()
+        self.tau = tau
+        self.label_smoothing = label_smoothing
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
+        
+        # Logit adjustment: compute log priors
+        class_counts = torch.tensor(cls_num_list, dtype=torch.float32)
+        priors = class_counts / class_counts.sum()
+        self.log_priors = torch.log(priors + 1e-8)  # Add small epsilon to prevent log(0)
+        
+        # Focal loss: compute alpha weights for classes
+        self.alpha_weights = torch.tensor([focal_alpha if i >= len(cls_num_list)//2 else 1-focal_alpha 
+                                         for i in range(len(cls_num_list))], dtype=torch.float32)
+        
+    def to(self, device):
+        super().to(device)
+        self.log_priors = self.log_priors.to(device)
+        self.alpha_weights = self.alpha_weights.to(device)
+        return self
+        
+    def forward(self, logits, targets, epoch=None, global_mean_logits=None):
+        """
+        Enhanced logit adjustment with focal loss concepts.
+        """
+        # Move tensors to correct device
+        self.log_priors = self.log_priors.to(logits.device)
+        self.alpha_weights = self.alpha_weights.to(logits.device)
+        
+        # 1. Apply logit adjustment (like LogitAdjustLoss)
+        adjusted_logits = logits + self.tau * self.log_priors
+        
+        # 2. Compute focal loss weights
+        # Get prediction confidence for focal loss
+        probs = F.softmax(adjusted_logits, dim=1)
+        pt = probs.gather(1, targets.unsqueeze(1)).squeeze(1)
+        
+        # Focal loss weight: (1-pt)^gamma
+        focal_weight = (1 - pt) ** self.focal_gamma
+        
+        # Alpha weight for class imbalance
+        alpha_weight = self.alpha_weights[targets]
+        
+        # Combined weight
+        combined_weight = focal_weight * alpha_weight
+        
+        # 3. Compute cross entropy with label smoothing
+        if self.label_smoothing > 0:
+            # Label smoothing implementation
+            num_classes = logits.size(1)
+            log_probs = F.log_softmax(adjusted_logits, dim=1)
+            
+            # Smooth labels
+            smooth_labels = torch.zeros_like(log_probs)
+            smooth_labels.fill_(self.label_smoothing / (num_classes - 1))
+            smooth_labels.scatter_(1, targets.unsqueeze(1), 1.0 - self.label_smoothing)
+            
+            # Compute loss
+            loss = -(smooth_labels * log_probs).sum(dim=1)
+        else:
+            loss = F.cross_entropy(adjusted_logits, targets, reduction='none')
+        
+        # 4. Apply focal and alpha weights
+        weighted_loss = combined_weight * loss
+        
+        return weighted_loss.mean()
+
 # --- TLC-STYLE LOSS FUNCTION ---
 class TLCExpertLoss(nn.Module):
     """
@@ -262,17 +336,17 @@ TLC_EXPERT_CONFIGS = {
     },
     'tlc_tail_focused': {
         'name': 'tlc_tail_expert',
+        'loss_type': 'logitadjust_enhanced',  # Use enhanced logit adjustment approach
         'loss_params': {
-            'max_m': 0.55,  # Softer margin for stability
-            'reweight_epoch': 140,  # Enable reweighting a bit later
-            'reweight_factor': 0.05,  # Standard reweighting strength
-            'annealing': 450,
-            'diversity_weight': 0.003,  # Much lower to avoid overpowering
+            'tau': 1.0,  # Logit adjustment strength
+            'label_smoothing': 0.1,  # Add label smoothing for stability
+            'focal_alpha': 0.25,  # Focal loss alpha for tail focus
+            'focal_gamma': 2.0,   # Focal loss gamma for hard examples
         },
         'epochs': 256,
         'lr': 0.4,
         'weight_decay': 1e-4,
-        'dropout_rate': 0.15,  # More dropout for regularization
+        'dropout_rate': 0.1,  # Standard dropout
         'milestones': [96, 192, 224],
         'gamma': 0.1,
         'warmup_epochs': 15,
@@ -465,16 +539,27 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
         init_weights=True
     ).to(DEVICE)
     
-    # TLC Loss
-    criterion = TLCExpertLoss(
-        cls_num_list=class_counts,
-        **expert_config['loss_params']
-    ).to(DEVICE)
-    
-    print(f"✅ Loss Function: TLCExpertLoss")
-    print(f"   - Max margin: {expert_config['loss_params']['max_m']}")
-    print(f"   - Reweight epoch: {expert_config['loss_params']['reweight_epoch']}")
-    print(f"   - Diversity weight: {expert_config['loss_params']['diversity_weight']}")
+    # Loss function based on expert type
+    loss_type = expert_config.get('loss_type', 'tlc')
+    if loss_type == 'logitadjust_enhanced':
+        criterion = EnhancedLogitAdjustLoss(
+            cls_num_list=class_counts,
+            **expert_config['loss_params']
+        ).to(DEVICE)
+        print(f"✅ Loss Function: EnhancedLogitAdjustLoss")
+        print(f"   - Tau (logit adjustment): {expert_config['loss_params']['tau']}")
+        print(f"   - Label smoothing: {expert_config['loss_params']['label_smoothing']}")
+        print(f"   - Focal alpha: {expert_config['loss_params']['focal_alpha']}")
+        print(f"   - Focal gamma: {expert_config['loss_params']['focal_gamma']}")
+    else:
+        criterion = TLCExpertLoss(
+            cls_num_list=class_counts,
+            **expert_config['loss_params']
+        ).to(DEVICE)
+        print(f"✅ Loss Function: TLCExpertLoss")
+        print(f"   - Max margin: {expert_config['loss_params']['max_m']}")
+        print(f"   - Reweight epoch: {expert_config['loss_params']['reweight_epoch']}")
+        print(f"   - Diversity weight: {expert_config['loss_params']['diversity_weight']}")
     
     # Print model summary
     print("📊 Model Architecture:")
@@ -488,8 +573,8 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
         weight_decay=1e-4,               # per spec
         nesterov=CONFIG['train_params']['nesterov']
     )
-    # Gradient clipping only for tail expert to avoid hampering head learning
-    grad_clip_norm = 1.0 if 'tail' in expert_name else 0.0
+    # Gradient clipping only for complex TLC tail expert to avoid hampering head learning
+    grad_clip_norm = 1.0 if ('tail' in expert_name and loss_type != 'logitadjust_enhanced') else 0.0
     
     # Learning rate scheduler with warmup
     def lr_lambda(epoch):
@@ -525,8 +610,9 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
     
     # Training loop
     for epoch in range(expert_config['epochs']):
-        # Hook before epoch for loss function
-        criterion._hook_before_epoch(epoch)
+        # Hook before epoch for loss function (only for TLC loss)
+        if hasattr(criterion, '_hook_before_epoch'):
+            criterion._hook_before_epoch(epoch)
         
         # Train
         model.train()
@@ -545,7 +631,12 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
             # Compute loss (with current global mean if available)
             # Move global_mean_logits to same device as outputs
             global_mean_on_device = global_mean_logits.to(DEVICE) if global_mean_logits is not None else None
-            loss = criterion(outputs, targets, epoch, global_mean_on_device)
+            
+            # Handle different loss function signatures
+            if loss_type == 'logitadjust_enhanced':
+                loss = criterion(outputs, targets, epoch, global_mean_on_device)
+            else:
+                loss = criterion(outputs, targets, epoch, global_mean_on_device)
             loss.backward()
             # Gradient clipping (only if enabled for this expert)
             if grad_clip_norm and grad_clip_norm > 0:
