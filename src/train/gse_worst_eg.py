@@ -145,7 +145,7 @@ def inner_cost_sensitive_plugin_with_per_group_thresholds(eta_S1, y_S1, eta_S2, 
 
 def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
                          T=30, xi=0.2, lambda_grid=None, beta_floor=0.05, 
-                         beta_momentum=0.25, patience=6, alpha_init=None, freeze_alpha=False, **inner_kwargs):
+                         beta_momentum=0.25, patience=6, alpha_init=None, mu_init=None, freeze_alpha=False, **inner_kwargs):
     """
     Improved Worst-group EG-outer algorithm with anti-collapse and smooth updates.
     
@@ -167,13 +167,32 @@ def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
     """
     device = eta_S1.device
     if lambda_grid is None:
-        lambda_grid = np.linspace(-1.5, 1.5, 31).tolist()
+        # If mu_init is provided, center the lambda grid around it
+        if mu_init is not None and K == 2:
+            # Convert mu_init to lambda: if mu = [a, -a], then lambda = 2*a
+            lambda_center = mu_init[0].item() * 2  # mu[0] - mu[1] = 2*mu[0] for symmetric case
+            lambda_range = 1.0  # Search in ±1.0 range around center
+            lambda_grid = np.linspace(lambda_center - lambda_range, lambda_center + lambda_range, 31).tolist()
+            print(f"🔒 Centered lambda grid around selective μ: [{lambda_grid[0]:.2f}, {lambda_grid[-1]:.2f}]")
+        else:
+            lambda_grid = np.linspace(-1.5, 1.5, 31).tolist()
     
     # Initialize uniform beta
     beta = torch.full((K,), 1.0/K, device=device)
     best = {"score": float("inf"), "alpha": None, "mu": None, "t": None, "beta": beta.clone()}
     history = []
     no_improve = 0
+    
+    # 🔧 FIX: Add selective mu as a candidate if provided
+    if mu_init is not None:
+        # Convert mu_init to lambda for grid search
+        if K == 2:
+            lambda_from_mu = mu_init[0].item() - mu_init[1].item()  # lambda = mu[0] - mu[1]
+            # Add this lambda to the grid if not already present
+            if lambda_from_mu not in lambda_grid:
+                lambda_grid.append(lambda_from_mu)
+                lambda_grid.sort()
+                print(f"🔒 Added selective μ-derived lambda={lambda_from_mu:.3f} to grid")
 
     print(f"Starting improved EG-outer with T={T}, xi={xi}, beta_floor={beta_floor}, momentum={beta_momentum}")
     print(f"Lambda grid: [{lambda_grid[0]:.2f}, {lambda_grid[-1]:.2f}] ({len(lambda_grid)} points)")
@@ -181,6 +200,8 @@ def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
         print(f"🔒 freeze_alpha=True -> using α from selective init: {alpha_init.tolist()}")
     elif freeze_alpha:
         print(f"⚠️ freeze_alpha=True but no alpha_init provided, using default initialization")
+    if mu_init is not None:
+        print(f"🔒 Using μ from selective init: {mu_init.tolist()}")
 
     for t in range(T):
         print(f"EG iteration {t+1}/{T}, β={[f'{b:.4f}' for b in beta.detach().cpu().tolist()]}")
@@ -195,6 +216,11 @@ def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
             eta_S1, y_S1, eta_S2, y_S2, class_to_group, K, beta,
             lambda_grid=lambda_grid, **inner_kwargs_with_alpha
         )
+        
+        # 🔧 FIX: If freeze_alpha is True, always use the original alpha_init
+        if freeze_alpha and alpha_init is not None:
+            a_t = alpha_init.clone().to(a_t.device)
+            print(f"🔒 EG-outer: Forcing alpha to frozen value: {a_t.tolist()}")
         
         # Compute per-group errors on S2 using per-group thresholds
         from src.train.gse_balanced_plugin import worst_error_on_S_with_per_group_thresholds
