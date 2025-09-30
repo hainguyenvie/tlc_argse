@@ -82,7 +82,7 @@ class TLCExpertLoss(nn.Module):
             
     def get_final_output(self, x, y):
         """Apply margin adjustment to ground-truth class logits."""
-        index = torch.zeros_like(x, dtype=torch.uint8, device=x.device)
+        index = torch.zeros_like(x, dtype=torch.bool, device=x.device)  # Fixed: use bool instead of uint8
         index.scatter_(1, y.data.view(-1, 1), 1)
         index_float = index.float()
         
@@ -153,6 +153,10 @@ class TLCExpertLoss(nn.Module):
             else:
                 diversity_temperature = 1.0
                 temperature_mean = 1.0
+                
+            # Ensure global_mean_logits is on the same device as logits
+            if global_mean_logits.device != logits.device:
+                global_mean_logits = global_mean_logits.to(logits.device)
                 
             # KL divergence from mean prediction (encourage diversity)
             output_dist = F.log_softmax(logits / diversity_temperature, dim=1)
@@ -469,7 +473,9 @@ def train_single_tlc_expert(expert_key):
             epoch_logits.append(outputs.detach().cpu())
             
             # Compute loss (with current global mean if available)
-            loss = criterion(outputs, targets, epoch, global_mean_logits)
+            # Move global_mean_logits to same device as outputs
+            global_mean_on_device = global_mean_logits.to(DEVICE) if global_mean_logits is not None else None
+            loss = criterion(outputs, targets, epoch, global_mean_on_device)
             loss.backward()
             optimizer.step()
             
