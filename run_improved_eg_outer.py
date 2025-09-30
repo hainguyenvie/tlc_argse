@@ -38,9 +38,9 @@ if __name__ == '__main__':
         'M': 10,                    # Inner iterations
         'alpha_steps': 4,           # Alpha fixed-point steps
         'gamma': 0.25,              # EMA factor
-        # Don't freeze - let the plugin optimize from selective init
-        'freeze_alpha': False,      # 🔧 FIX: Allow optimization from selective init
-        'freeze_mu': False,         # 🔧 FIX: Allow optimization from selective init
+        # Allow EG-outer to optimize while using selective init as starting point
+        'freeze_alpha': False,      # Allow EG-outer to optimize alpha from selective init
+        'freeze_mu': False,         # Allow EG-outer to optimize mu from selective init
     })
     
     # Update output directory for improved results
