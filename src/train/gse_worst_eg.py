@@ -145,7 +145,7 @@ def inner_cost_sensitive_plugin_with_per_group_thresholds(eta_S1, y_S1, eta_S2, 
 
 def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
                          T=30, xi=0.2, lambda_grid=None, beta_floor=0.05, 
-                         beta_momentum=0.25, patience=6, alpha_init=None, mu_init=None, freeze_alpha=False, **inner_kwargs):
+                         beta_momentum=0.25, patience=6, alpha_init=None, mu_init=None, freeze_alpha=False, freeze_mu=False, **inner_kwargs):
     """
     Improved Worst-group EG-outer algorithm with anti-collapse and smooth updates.
     
@@ -202,6 +202,56 @@ def worst_group_eg_outer(eta_S1, y_S1, eta_S2, y_S2, class_to_group, K,
         print(f"⚠️ freeze_alpha=True but no alpha_init provided, using default initialization")
     if mu_init is not None:
         print(f"🔒 Using μ from selective init: {mu_init.tolist()}")
+    
+    # 🔧 FIX: If freeze_mu is True, skip the lambda grid search and use mu_init directly
+    if freeze_mu and mu_init is not None:
+        print(f"🔒 freeze_mu=True -> using μ from selective init directly: {mu_init.tolist()}")
+        # Return early with the frozen mu values
+        # We still need to run a minimal optimization to get thresholds
+        best = {
+            "score": float("inf"), 
+            "alpha": alpha_init.clone() if alpha_init is not None else torch.ones(K, device=device),
+            "mu": mu_init.clone(),
+            "t_group": None,
+            "beta": beta.clone()
+        }
+        
+        # Run one iteration to get thresholds with frozen mu
+        print(f"🔒 Running single iteration with frozen μ for threshold learning...")
+        
+        # Inner optimization with frozen mu
+        inner_kwargs_with_alpha = inner_kwargs.copy()
+        if freeze_alpha and alpha_init is not None:
+            inner_kwargs_with_alpha['alpha_init'] = alpha_init
+            inner_kwargs_with_alpha['freeze_alpha'] = True
+            
+        a_t, m_t, thr_group_t, _ = inner_cost_sensitive_plugin_with_per_group_thresholds(
+            eta_S1, y_S1, eta_S2, y_S2, class_to_group, K, beta,
+            lambda_grid=[0.0],  # Single dummy lambda since mu is frozen
+            **inner_kwargs_with_alpha
+        )
+        
+        # Force frozen values
+        if freeze_alpha and alpha_init is not None:
+            a_t = alpha_init.clone().to(a_t.device)
+        m_t = mu_init.clone().to(m_t.device)
+        
+        # Evaluate with frozen values
+        from src.train.gse_balanced_plugin import worst_error_on_S_with_per_group_thresholds
+        w_err, gerrs = worst_error_on_S_with_per_group_thresholds(eta_S2, y_S2, a_t, m_t, thr_group_t, class_to_group, K)
+        
+        best.update({
+            "score": w_err,
+            "alpha": a_t.clone(),
+            "mu": m_t.clone(), 
+            "t_group": thr_group_t.clone(),
+            "beta": beta.clone()
+        })
+        
+        print(f"✅ Frozen optimization complete - Worst={w_err:.4f}, Group errors: {[f'{g:.4f}' for g in gerrs]}")
+        print(f"✅ Using frozen α={a_t.tolist()}, μ={m_t.tolist()}")
+        
+        return best["alpha"], best["mu"], best["t_group"], best["beta"].detach().cpu(), []
 
     for t in range(T):
         print(f"EG iteration {t+1}/{T}, β={[f'{b:.4f}' for b in beta.detach().cpu().tolist()]}")

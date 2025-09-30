@@ -619,6 +619,12 @@ def main():
                 init_mu = sel_ckpt.get('mu', None) 
                 init_t = sel_ckpt.get('t', None)
                 selective_loaded = True
+                
+                # Debug: Print what's in the checkpoint
+                print(f"🔍 Debug - Selective checkpoint keys: {list(sel_ckpt.keys())}")
+                print(f"🔍 Debug - init_alpha: {init_alpha}")
+                print(f"🔍 Debug - init_mu: {init_mu}")
+                print(f"🔍 Debug - init_t: {init_t}")
             else:
                 print("❌ Selective checkpoint incompatible with enriched features. Using random init.")
         except Exception as e:
@@ -721,7 +727,8 @@ def main():
             use_conditional_alpha=CONFIG['plugin_params']['use_conditional_alpha'],
             alpha_init=alpha_init,  # 🔧 Fix: Pass selective alpha init
             mu_init=mu_init,  # 🔧 Fix: Pass selective mu init
-            freeze_alpha=CONFIG['plugin_params'].get('freeze_alpha', False)  # 🔧 Fix: Pass freeze flag
+            freeze_alpha=CONFIG['plugin_params'].get('freeze_alpha', False),  # 🔧 Fix: Pass freeze flag
+            freeze_mu=CONFIG['plugin_params'].get('freeze_mu', False)  # 🔧 Fix: Pass freeze_mu flag
         )
         
         

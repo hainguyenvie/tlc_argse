@@ -38,9 +38,9 @@ if __name__ == '__main__':
         'M': 10,                    # Inner iterations
         'alpha_steps': 4,           # Alpha fixed-point steps
         'gamma': 0.25,              # EMA factor
-        # Keep α from selective (tail-boost retained), re-optimize μ only
+        # Keep α and μ from selective (preserve good selective training results)
         'freeze_alpha': True,
-        'freeze_mu': False,
+        'freeze_mu': True,  # 🔧 FIX: Also freeze mu to preserve selective training results
     })
     
     # Update output directory for improved results
