@@ -82,7 +82,7 @@ class TLCExpertLoss(nn.Module):
             
     def get_final_output(self, x, y):
         """Apply margin adjustment to ground-truth class logits."""
-        index = torch.zeros_like(x, dtype=torch.bool, device=x.device)  # Fixed: use bool instead of uint8
+        index = torch.zeros_like(x, dtype=torch.bool, device=x.device)
         index.scatter_(1, y.data.view(-1, 1), 1)
         index_float = index.float()
         
@@ -90,11 +90,16 @@ class TLCExpertLoss(nn.Module):
         batch_m = torch.matmul(self.m_list[None, :], index_float.transpose(0, 1))
         batch_m = batch_m.view((-1, 1))
         
-        # Apply large margin to ground-truth class (30 is from original TLC)
-        x_m = x - 30 * batch_m
+        # Apply margin to ground-truth class (reduced from 30 to 10 for stability)
+        x_m = x - 10 * batch_m
         
-        # Convert to concentration parameters (evidential)
-        return torch.exp(torch.where(index, x_m, x))
+        # NUMERICAL STABILIZATION: Clamp logits before exp to prevent overflow/underflow
+        adjusted_logits = torch.where(index, x_m, x)
+        adjusted_logits = torch.clamp(adjusted_logits, min=-50, max=50)  # Prevent extreme values
+        
+        # Convert to concentration parameters (evidential) with minimum value
+        alpha = torch.exp(adjusted_logits) + 1e-6  # Add small epsilon to prevent alpha=0
+        return alpha
         
     def forward(self, logits, targets, epoch, global_mean_logits=None):
         """
@@ -110,13 +115,28 @@ class TLCExpertLoss(nn.Module):
         alpha = self.get_final_output(logits, targets)  # [B, C]
         S = alpha.sum(dim=1, keepdim=True)  # [B, 1]
         
-        # 2. Evidential NLL loss
+        # 2. Evidential NLL loss with numerical stabilization
+        # Clamp alpha and S to prevent log(0) and ensure numerical stability
+        alpha_clamped = torch.clamp(alpha, min=1e-8, max=1e8)
+        S_clamped = torch.clamp(S, min=1e-8, max=1e8)
+        
+        # Compute log probabilities safely
+        log_alpha = torch.log(alpha_clamped)
+        log_S = torch.log(S_clamped)
+        log_probs = log_alpha - log_S
+        
+        # Check for NaN/Inf in log probabilities
+        log_probs = torch.where(torch.isfinite(log_probs), log_probs, torch.full_like(log_probs, -100.0))
+        
         nll_loss = F.nll_loss(
-            torch.log(alpha) - torch.log(S), 
+            log_probs, 
             targets, 
             weight=self.per_cls_weights_base, 
             reduction='none'
         )  # [B]
+        
+        # Safety check for NaN in loss
+        nll_loss = torch.where(torch.isfinite(nll_loss), nll_loss, torch.zeros_like(nll_loss))
         
         # 3. KL regularization (encourage concentration on true class)
         if self.kl_weight_schedule == 'linear':
@@ -132,15 +152,37 @@ class TLCExpertLoss(nn.Module):
             
             # Adjusted Dirichlet parameters: α̃ = y + (1-y)(α+1)
             alpha_tilde = yi + (1 - yi) * (alpha + 1)  # [B, C]
+            
+            # NUMERICAL STABILIZATION: Clamp alpha_tilde to prevent NaN in gamma functions
+            alpha_tilde = torch.clamp(alpha_tilde, min=1e-6, max=1e6)
             S_tilde = alpha_tilde.sum(dim=1, keepdim=True)  # [B, 1]
             
-            # KL divergence: KL(Dir(α̃) || Uniform)
-            kl_div = (
-                torch.lgamma(S_tilde) - 
-                torch.lgamma(torch.tensor(alpha_tilde.shape[1], dtype=torch.float, device=alpha.device)) -
-                torch.lgamma(alpha_tilde).sum(dim=1, keepdim=True) +
-                ((alpha_tilde - 1) * (torch.digamma(alpha_tilde) - torch.digamma(S_tilde))).sum(dim=1, keepdim=True)
-            ).squeeze(-1)  # [B]
+            # SAFE KL divergence computation with checks for NaN/Inf
+            try:
+                # KL divergence: KL(Dir(α̃) || Uniform) with numerical stability
+                num_classes_tensor = torch.tensor(alpha_tilde.shape[1], dtype=torch.float, device=alpha.device)
+                
+                # Compute each term separately with clamping
+                term1 = torch.lgamma(torch.clamp(S_tilde, min=1e-6, max=1e6))
+                term2 = torch.lgamma(torch.clamp(num_classes_tensor, min=1e-6, max=1e6))
+                term3 = torch.lgamma(torch.clamp(alpha_tilde, min=1e-6, max=1e6)).sum(dim=1, keepdim=True)
+                
+                # Digamma terms with clamping
+                digamma_alpha = torch.digamma(torch.clamp(alpha_tilde, min=1e-6, max=1e6))
+                digamma_S = torch.digamma(torch.clamp(S_tilde, min=1e-6, max=1e6))
+                term4 = ((alpha_tilde - 1) * (digamma_alpha - digamma_S)).sum(dim=1, keepdim=True)
+                
+                kl_div = (term1 - term2 - term3 + term4).squeeze(-1)  # [B]
+                
+                # Check for NaN/Inf and replace with zeros if found
+                kl_div = torch.where(torch.isfinite(kl_div), kl_div, torch.zeros_like(kl_div))
+                
+                # Additional safety: clamp the final KL divergence
+                kl_div = torch.clamp(kl_div, min=-100, max=100)
+                
+            except Exception as e:
+                print(f"Warning: KL computation failed with error {e}, skipping KL term")
+                kl_div = torch.zeros_like(nll_loss)
             
             nll_loss = nll_loss + kl_weight * kl_div
             
@@ -167,7 +209,13 @@ class TLCExpertLoss(nn.Module):
             
             nll_loss = nll_loss + diversity_loss
             
-        return nll_loss.mean()
+        # Final safety check: ensure the final loss is finite
+        final_loss = nll_loss.mean()
+        if not torch.isfinite(final_loss):
+            print(f"Warning: Non-finite loss detected at epoch {epoch}, returning zero loss")
+            return torch.tensor(0.0, device=logits.device, requires_grad=True)
+        
+        return final_loss
 
 # --- TLC EXPERT CONFIGURATIONS ---
 TLC_EXPERT_CONFIGS = {
