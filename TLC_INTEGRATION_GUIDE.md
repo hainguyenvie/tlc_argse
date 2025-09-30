@@ -63,7 +63,7 @@ python -m src.train.train_expert_tlc
 
 # Step 2: Train gating with TLC expert logits
 python -m src.train.train_gating_only --mode selective
-# (Update CONFIG['experts']['logits_dir'] to './outputs/logits_tlc/')
+# (Update CONFIG['experts']['logits_dir'] to './outputs/tlc_logit/')
 
 # Step 3: Plugin optimization
 python run_improved_eg_outer.py  
@@ -126,7 +126,7 @@ python -m src.train.eval_gse_plugin
 ## Output Directories
 
 - **Checkpoints**: `./checkpoints/experts_tlc/`
-- **Logits**: `./outputs/logits_tlc/`
+- **Logits**: `./outputs/tlc_logit/`
 - **Plugin Results**: `./checkpoints/argse_tlc_improved/`
 - **Final Metrics**: `./results_tlc_improved/`
 

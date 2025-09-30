@@ -31,7 +31,7 @@ def update_pipeline_configs():
     gating_config_updates = {
         'experts': {
             'names': ['tlc_ce_expert', 'tlc_balanced_expert', 'tlc_tail_expert'],
-            'logits_dir': './outputs/logits_tlc/',
+            'logits_dir': './outputs/tlc_logit/',
         }
     }
     
@@ -39,7 +39,7 @@ def update_pipeline_configs():
     plugin_config_updates = {
         'experts': {
             'names': ['tlc_ce_expert', 'tlc_balanced_expert', 'tlc_tail_expert'],
-            'logits_dir': './outputs/logits_tlc',
+            'logits_dir': './outputs/tlc_logit',
         },
         'output': {
             'checkpoints_dir': './checkpoints/argse_tlc_improved/',
@@ -50,7 +50,7 @@ def update_pipeline_configs():
     eval_config_updates = {
         'experts': {
             'names': ['tlc_ce_expert', 'tlc_balanced_expert', 'tlc_tail_expert'],
-            'logits_dir': './outputs/logits_tlc',
+            'logits_dir': './outputs/tlc_logit',
         },
         'plugin_checkpoint': './checkpoints/argse_tlc_improved/cifar100_lt_if100/gse_balanced_plugin.ckpt',
         'output_dir': './results_tlc_improved/cifar100_lt_if100',
@@ -174,9 +174,9 @@ def main():
             'cmd': [sys.executable, '-m', 'src.train.train_expert_tlc'],
             'desc': 'Step 1: Training TLC-style Experts',
             'required_outputs': [
-                './outputs/logits_tlc/cifar100_lt_if100/tlc_ce_expert/',
-                './outputs/logits_tlc/cifar100_lt_if100/tlc_balanced_expert/', 
-                './outputs/logits_tlc/cifar100_lt_if100/tlc_tail_expert/',
+                './outputs/tlc_logit/cifar100_lt_if100/tlc_ce_expert/',
+                './outputs/tlc_logit/cifar100_lt_if100/tlc_balanced_expert/', 
+                './outputs/tlc_logit/cifar100_lt_if100/tlc_tail_expert/',
             ]
         },
         {
