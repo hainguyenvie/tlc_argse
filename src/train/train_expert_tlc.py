@@ -235,13 +235,13 @@ TLC_EXPERT_CONFIGS = {
             'annealing': 300,
             'diversity_weight': 0.005,  # Light diversity
         },
-        'epochs': 200,
-        'lr': 0.1,
-        'weight_decay': 5e-4,
+        'epochs': 256,
+        'lr': 0.4,
+        'weight_decay': 1e-4,
         'dropout_rate': 0.1,
-        'milestones': [160, 180],
-        'gamma': 0.01,
-        'warmup_epochs': 5,
+        'milestones': [96, 192, 224],
+        'gamma': 0.1,
+        'warmup_epochs': 15,
     },
     'tlc_balanced': {
         'name': 'tlc_balanced_expert', 
@@ -252,13 +252,13 @@ TLC_EXPERT_CONFIGS = {
             'annealing': 500,
             'diversity_weight': 0.01,
         },
-        'epochs': 200,
-        'lr': 0.1,
-        'weight_decay': 5e-4,
+        'epochs': 256,
+        'lr': 0.4,
+        'weight_decay': 1e-4,
         'dropout_rate': 0.1,
-        'milestones': [160, 180],
-        'gamma': 0.01,
-        'warmup_epochs': 5,
+        'milestones': [96, 192, 224],
+        'gamma': 0.1,
+        'warmup_epochs': 15,
     },
     'tlc_tail_focused': {
         'name': 'tlc_tail_expert',
@@ -269,13 +269,13 @@ TLC_EXPERT_CONFIGS = {
             'annealing': 450,
             'diversity_weight': 0.003,  # Much lower to avoid overpowering
         },
-        'epochs': 200,
-        'lr': 0.05,  # Slightly lower LR for tail expert stability
-        'weight_decay': 5e-4,
+        'epochs': 256,
+        'lr': 0.4,
+        'weight_decay': 1e-4,
         'dropout_rate': 0.15,  # More dropout for regularization
-        'milestones': [100, 140],  # Earlier decay to prevent saturation
-        'gamma': 0.1,  # Softer decay than 0.01 to avoid huge jumps
-        'warmup_epochs': 5,
+        'milestones': [96, 192, 224],
+        'gamma': 0.1,
+        'warmup_epochs': 15,
     }
 }
 
@@ -484,8 +484,8 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
     optimizer = optim.SGD(
         model.parameters(), 
         lr=expert_config['lr'],
-        momentum=CONFIG['train_params']['momentum'],
-        weight_decay=expert_config['weight_decay'],
+        momentum=0.9,                    # per spec
+        weight_decay=1e-4,               # per spec
         nesterov=CONFIG['train_params']['nesterov']
     )
     # Add gradient clipping threshold for stability in tail expert
@@ -493,10 +493,10 @@ def train_single_tlc_expert(expert_key, select_by: str = None):
     
     # Learning rate scheduler with warmup
     def lr_lambda(epoch):
-        # Warmup
+        # Warmup: linear for warmup_epochs to base lr
         warmup_epochs = expert_config['warmup_epochs']
         if epoch < warmup_epochs:
-            return float(1 + epoch) / warmup_epochs
+            return float(epoch + 1) / warmup_epochs
         
         # Multi-step decay
         lr = 1.0
